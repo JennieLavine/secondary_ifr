@@ -1,0 +1,475 @@
+---
+title: "Manaus_take2"
+author: "Jennie Lavine"
+date: "2/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(tidyverse)
+require(lubridate)
+require(deSolve)
+
+```
+
+
+```{r, eval=T}
+#age distribution of deaths data
+#data from https://transparencia.registrocivil.org.br/dados-covid-download
+
+obitos.2019<-read_csv('manaus_data/obitos-2019.csv')
+obitos.2020<-read_csv('manaus_data/obitos-2020.csv')
+obitos.2021<-read_csv('manaus_data/obitos-2021.csv')
+
+obitos.2019$year<-2019
+obitos.2020$year<-2020
+obitos.2021$year<-2021
+
+obitos<-rbind(obitos.2019,obitos.2020,obitos.2021)
+obitos.am <-subset(obitos, uf=='AM')
+
+res <- as.data.frame(
+  cbind(
+    year=rep(
+      2019:2021,
+      each=length(unique(obitos.am$faixa_etaria))),
+    age_grp=rep(
+      unique(obitos.am$faixa_etaria), 
+      times=3), 
+    deaths=0,
+    props=0))
+
+res$age_grp<-ordered(res$age_grp, levels = unique(res$age_grp)[1:12])
+
+res$deaths<-as.numeric(res$deaths)
+res$props<-as.numeric(res$props)
+
+for(i in unique(res$year)){
+  for(j in unique(res$age_grp)){
+   row.ind<-which(res$year==i & res$age_grp==j)
+   res[row.ind,'deaths'] <-
+     sum(obitos.am$total[
+       obitos.am$year==i & 
+         obitos.am$faixa_etaria==j])
+  }
+  }
+
+for(i in 2019:2021){
+  res$props[res$year==i] <- 
+    res$deaths[res$year==i] /  
+    sum(res$deaths[res$year==i])
+}
+
+# g <- ggplot(data=res, aes(x=age_grp, y=deaths))
+# g + geom_col()+ facet_grid(rows=vars(year))
+# 
+# g <- ggplot(data=res, aes(x=age_grp, y=props))
+# g + geom_col()+ facet_grid(rows=vars(year))
+
+
+```
+
+
+
+```{r}
+##Manaus demographics and IFR from first wave
+
+#https://www.citypopulation.de/en/brazil/amazonas/manaus/130260305__manaus/
+
+age_dist <- as.data.frame(
+  cbind(max_age= c(seq(10,70, by=10), 100), 
+        pop.size.2010=c(
+          328431, 356046, 365847, 306638, 
+          207900,  129071, 63695, 44386)))
+
+age_dist$prop <- age_dist$pop.size.2010/sum(age_dist$pop.size.2010)
+
+#this is the age distribution just for the city of manaus
+#pop size of manaus 2020 taken from wikipedia
+pop.2020 <- 2219580
+#https://en.wikipedia.org/wiki/Amazonas_(Brazilian_state)#Demographics
+amazonas.pop.2019 <- 4144597
+
+age_dist$pop2020<- age_dist$prop * pop.2020
+
+deaths.am <- subset(res, year==2019 & age_grp!='N/I')$deaths
+#assuming the death rates are the same in manaus in particular as amazonas as a whole...
+deaths.man <- deaths.am*(pop.2020/amazonas.pop.2019)
+age_dist$deaths <- c(deaths.man[1:7], sum(deaths.man[8:11]))
+age_dist$death.rate <- age_dist$deaths / age_dist$pop2020
+
+plot(age_dist$max_age, age_dist$death.rate, pch=1, lty=1, type='b')
+
+#extracted from buss supplement thru june
+#first four are a bit fudged because values are too low to accurately extract graphically
+ifr.manaus.raw <- c(0.00001, 0.00001, 0.00002, 0.0005, 0.0016, 0.0043, 0.014, 0.03, 0.062)
+
+#this is a hack but using it to test the code
+ifr.manaus <- c(0.00001, 0.00001, 0.00002, 0.0005, 0.0016, 0.0043, 0.014, mean(c(0.03, 0.062)))
+
+#weight IFR in over 70s by number of deaths in those age groups
+#sum.death.over70 <- sum(apply(diff.death, 2, sum)[8:11])
+#sum.death.70.80 <- apply(diff.death, 2, sum)[8]
+#prop.70s <- sum.death.70.80/sum.death.over70
+
+#age_dist$ifr.manaus <- c(ifr.manaus[1:7], (ifr.manaus[8]*prop.70s + ifr.manaus[9]*(1-prop.70s)))
+
+age_dist$ifr.manaus <- ifr.manaus
+
+
+points(age_dist$max_age, age_dist$ifr.manaus, col=2, type='b', pch=2, lty=2)
+legend('topleft', legend=c('background death rate','IFR'), pch=1:2, lty=1:2, col=1:2)
+#compare to verity: 0.000016, 0.0000695, 0.000309, 0.000844, 0.00161, 0.00595, 0.0193, 0.0428, 0.078
+
+
+#https://g1.globo.com/am/amazonas/noticia/2020/12/11/amazonas-lidera-ranking-de-registros-de-nascimento-tardios-no-pais-aponta-ibge.ghtml
+#80997 births recorded in 2019.  8853 of them were from a previous year, so there is clearly error, but on the assumption that there are an equal number of births that occurred in 2019 that were NOT recorded, we use that number as it stands.
+tot_pop <- sum(age_dist$pop2020)
+birth.rate <- 80997/tot_pop
+```
+
+```{r}
+#excess deaths data
+#https://docs.google.com/spreadsheets/d/1UMhKX4mBSBM8YCZL338vB0UY8TYsgGTb/edit#gid=1271932269
+
+burial.dat <- read_csv('manaus_data/excess_deaths_burials.csv')
+colnames(burial.dat)[10] <- 'pub_priv_burials_2020_21'
+colnames(burial.dat)[12] <- 'pub_priv_burials_cremats_2020_21'
+burial.dat <- burial.dat[,1:27]
+burial.dat$pub_priv_burials_cremats_2020_21<- 
+  as.numeric(burial.dat$pub_priv_burials_cremats_2020_21)
+burial.dat$Covid_dates_2020_2021 <- 
+  as.Date(burial.dat$Covid_dates_2020_2021, '%d-%b-%y')
+
+burial.dat$PreCovid_adj_deaths_15d_running_mean <-
+  as.numeric(burial.dat$PreCovid_adj_deaths_15d_running_mean)
+
+burial.dat<-subset(burial.dat, 
+                   Covid_dates_2020_2021<=as.Date('2021-03-01') & 
+                     Covid_dates_2020_2021>=as.Date('2020-04-01'))
+
+diff.death <- 
+  burial.dat$pub_priv_burials_cremats_2020_21- 
+  burial.dat$PreCovid_adj_deaths_15d_running_mean
+
+diff.death[is.na(diff.death)]<-0
+
+# plot(burial.dat$PreCovid_natual_deaths_ARPEN)
+# #points(table(am_dat_2019$date), type='p', col=2)
+# plot(burial.dat$pub_priv_burials_cremats_2020_21)
+# 
+# plot(burial.dat$Covid_dates_2020_2021, diff.death, 
+#      xaxt='n', xlab='Date', ylab='Excess deaths')
+# r <- range(burial.dat$Covid_dates_2020_2021)
+# axis.Date(1, at = seq(r[1], r[2], by = "month"), format = "%b '%y")
+# 
+# 
+# plot(burial.dat$Covid_dates_2020_2021,  cumsum(diff.death), 
+#      xaxt='n', xlab='Date', ylab='Cumulative excess deaths')
+# r <- range(burial.dat$Covid_dates_2020_2021)
+# axis.Date(1, at = seq(r[1], r[2], by = "month"), format = "%b '%y")
+
+
+```
+
+
+```{r}
+#Run model to show effects of various parameters on timing and size of second wave
+
+covid.eq.ages.fun <- function (shape, nageclass){
+  eqnames <- c('dS1', 'dI1', 'dS2', 'dI2', 'dS3', 'dI3', 
+               paste('dRp',1:shape, sep=''), 
+               paste('dRs',1:shape, sep=''))
+  statenames <-c('S1', 'I1', 'S2', 'I2', 'S3', 'I3', 
+               paste('Rp',1:shape, sep=''), 
+               paste('Rs',1:shape, sep=''))
+  eqs <- list(NULL)
+  
+  eqs[[1]]<- quote(dS1 <- mu * N + age.in * S1 - 
+                     (lambda + delta + age.out + nu) * S1)
+  
+  eqs[[2]] <- quote(dI1 <- age.in * I1 + 
+                      lambda *  S1 - 
+                      (gamma + delta + age.out + alpha) * I1)
+  
+  
+  eqs[[3]] <- parse(text = paste('dS2 <- age.in * S2 + omega * shape *' , 
+                                 statenames[tail(grep('Rp', statenames),1)], 
+                                 '-(lambda + delta + age.out + nu) * S2'))[[1]]
+  
+  eqs[[4]] <- quote(dI2 <- age.in * I2 + 
+                      lambda * S2 -
+                      (gamma + delta + age.out + alpha) * I2)
+  
+  eqs[[5]] <- parse(text = paste('dS3 <- age.in * S3 + omega * shape *' , 
+                                 statenames[tail(grep('Rs', statenames),1)], 
+                                 '-(lambda + delta + age.out + nu) * S3'))[[1]]
+  
+  eqs[[6]] <- quote(dI3 <- age.in * I3 + 
+                      lambda * S3 -
+                      (gamma + delta + age.out + alpha) * I3)
+  
+  eqs[[7]] <- quote(dRp1 <- age.in*Rp1 +  gamma * I1 - 
+                      (omega * shape + delta + age.out) * Rp1)
+  
+    if(shape>1){
+    for(i in 2:shape){
+      eqs[[6+i]] <- parse(text = paste(eqnames[6+i],
+                                       '<- age.in *', statenames[6+i],
+                                       '+ omega * shape *', statenames[5+i], 
+                                       ' - (delta + omega * shape + age.out) *', 
+                                       statenames[6+i]) )[[1]]
+    }
+    } 
+  eqs[[7+shape]] <- quote(dRs1 <- age.in*Rs1 +  gamma * (I2+I3) - 
+                      (omega * shape + delta + age.out) * Rs1)
+  
+  if(shape>1){
+    for(i in 2:shape){
+      eqs[[6+shape+i]] <- parse(text = paste(eqnames[6+shape+i],
+                                       '<- age.in *', statenames[6+shape+i],
+                                       '+ omega * shape *', statenames[5+shape+i], 
+                                       ' - (delta + omega * shape + age.out) *', 
+                                       statenames[6+shape+i]) )[[1]]
+    }
+  
+  }
+  return(list(eqs=eqs, snames = statenames, enames = eqnames, shape=shape))
+}
+
+MODEL <- function(t, logstate, parameters, eqs) {
+  state=exp(logstate)
+  with(as.list(c(state, parameters)), {
+    S1 = matrix(state[1:J], nrow = J, ncol=1)
+    I1 = matrix(state[(J+1):(2*J)], nrow = J, ncol=1)
+    S2 = matrix(state[(2*J+1):(3*J)], nrow = J, ncol=1)
+    I2 = matrix(state[(3*J+1):(4*J)], nrow = J, ncol=1)
+    S3 = matrix(state[(4*J+1):(5*J)], nrow = J, ncol=1)
+    I3 = matrix(state[(5*J+1):(6*J)], nrow = J, ncol=1)
+    Rp1 = matrix(state[(6*J+1):(7*J)], nrow = J, ncol=1)
+    if(eqs$shape>1){
+      for(i in 8:(6+eqs$shape)){
+        eval(parse(
+          text = paste(eqs$snames[i],
+                       '<- matrix(state[(', i-1,
+                       '*J+1):(', i, '*J)], nrow=J,  ncol=1)',
+                       sep='')
+        ) [[1]])
+      }
+    }
+    Rs1 = matrix(state[((6+eqs$shape)*J+1):((7+eqs$shape)*J)], nrow = J, ncol=1)
+    if(eqs$shape>1){
+      for(i in (8+eqs$shape):(6+(2*eqs$shape))){
+        eval(parse(
+          text = paste(eqs$snames[i],
+                       '<- matrix(state[(', i-1,
+                       '*J+1):(', i, '*J)], nrow=J,  ncol=1)',
+                       sep='')
+        ) [[1]])
+      }
+    }
+    
+    N = sum(state)
+    beta = beta0*(1+beta1*cos(2*pi*t+(pi/3)))
+    age.in <- matrix(c(0, aging), nrow=J, ncol=1)
+    age.out <- matrix(c(aging, 0), nrow=J, ncol=1)
+    lambda = beta * sum(I1 + I2*rho + I3*rho)
+    shape = eqs$shape
+    
+    res<-rep(0,length=length(eqs$enames)*J)
+    names(res)<-names(state)
+    for(i in 1:length(eqs$eqs)){
+      res[(J*(i-1)+1):(J*i)]<- eval(eqs$eqs[[i]])
+    }
+    return(list(res/state))
+  }) 
+}
+```
+We run the model using the following code, where $J$ identifies the number of age classes, and $gshape$ the shape parameter for the Gamma distributed waning times (or equivalently the number of immune compartments).
+
+
+
+```{r}
+
+ifr.trans.fun <- function(x, psi){
+    return(x*psi)
+}
+
+sim.fun <- function(inits, params,t1=times1, t2=times2){
+  params1<-params
+  params1$beta0<-3*(params$gamma + params$mu)
+
+  out1 <- ode(
+    y = inits,
+    t = t1,
+    func = MODEL,
+    parms = params1,
+    eqs = test.eqs
+  )
+  
+  inits2<-c(tail(out1[,-1], 1))
+  names(inits2)<-names(inits)
+  
+  out2 <- ode(
+    y = inits2,
+    t = t2,
+    func = MODEL,
+    parms = params,
+    eqs = test.eqs)
+  
+  temp <- exp(rbind(out1, out2))
+  temp[,1] <- log(temp[,1])
+  temp<-temp[dates.sim>=intro.date,]
+  
+  I1 <- temp[,grep('I1', colnames(temp))] 
+  I2 <- temp[,grep('I2', colnames(temp))]
+  
+  probs.step <- 1-pexp(rate=as.numeric(params$gamma), 1/steps.yr)
+  
+  I1_t1 <- tail(I1, -1)
+  I1_t0 <- head(I1, -1)
+  X = I1_t1 - (I1_t0 * probs.step)  #calculate X, new infections at time t
+  newI1_step<-X*tot_pop
+  
+  I2_t1 <- tail(I2, -1)
+  I2_t0 <- head(I2, -1)
+  X = I2_t1 - (I2_t0 * probs.step)  #calculate X, new infections at time t
+  newI2_step<-X*tot_pop
+  
+  deaths_res_1 <- 
+    apply(t(t(newI1_step) * 
+              ifr.trans.fun(
+                x=age_dist$ifr.manaus,
+                psi=params$psi1)), 1, sum)
+  
+  
+  deaths_res_2 <-
+    apply(t(t(newI2_step) *
+              ifr.trans.fun(x=age_dist$ifr.manaus,
+                            psi=params$psi2)), 1, sum)
+  
+  deaths_res_tot <- deaths_res_1 + deaths_res_2
+  return(deaths_res_tot)
+}
+
+```
+
+
+Set initial conditions to 70\% recovered at beginning
+
+```{r, cache=T}
+gshape=5
+J=8
+
+test.eqs<-covid.eq.ages.fun(shape=gshape)
+inits <- rep(0.0000000001,length(test.eqs$snames)*J)
+state.names<-paste(rep(test.eqs$snames,each=J),
+                   rep(letters[1:J]),sep='')
+names(inits)<-state.names
+
+inits[grep('S1',state.names)]<-age_dist$prop*0.3
+inits[grep('Rp1',state.names)]<-age_dist$prop*0.7
+inits[grep('I1', state.names)]<-1/sum(age_dist$pop.size)
+inits<-log(inits/sum(inits))
+```
+
+
+```{r, cache=T}
+param_grid<-expand.grid(
+  R0 = seq(2,6,by=0.5), 
+  beta1 = 0, #seasonal forcing parameter
+  gamma = 365/9, 
+  omega = c(0.05, seq(1, 3, by=1)),
+  rho = c(0.5,1),
+  nu=0,
+  psi1=1:5,
+  psi2=c(seq(0,1,by=0.25),2)
+)
+
+params<-list(NULL)
+for(i in 1:nrow(param_grid)){
+  params[[i]]<- list(
+    mu = matrix(c(birth.rate, rep(0, (J-1))), nrow=J, ncol=1),
+    delta = matrix(age_dist$death.rate, nrow=J, ncol=1),
+    alpha=0,
+    psi1=param_grid$psi1[i],
+    psi2=param_grid$psi2[i],
+    beta0 = (param_grid$gamma[i] + birth.rate)*param_grid$R0[i], 
+    beta1 = param_grid$beta1[i], #seasonal forcing parameter
+    aging = matrix(1/(diff(age_dist$max_age)),nrow=(J-1), ncol=1),
+    gamma = param_grid$gamma[i], 
+    omega = param_grid$omega[i],
+    rho = param_grid$rho[i],
+    nu = param_grid$nu[i],
+    R0=param_grid$R0[i]
+    )
+}
+
+steps.yr = 365
+maxt = 3
+times=seq(0,maxt, by=1/steps.yr)
+res <- list(NULL)
+```
+
+
+```{r, eval=F}
+dates<-burial.dat$Covid_dates_2020_2021
+intro.date<-as.Date('2020-11-06')
+pulse.date<-as.Date('2020-05-01')
+data <- diff.death[dates>intro.date]
+max.date<-max(dates)
+dates.sim <- dates[dates>pulse.date]
+dates.fit <- seq(intro.date, max.date, by=1)
+
+steps.yr = 365
+maxt = 0.5
+times1 = seq(0, by=1/steps.yr, length=intro.date-pulse.date)
+times2 = seq(0, by=1/steps.yr, length=max.date-intro.date+1)
+
+for(i in 1:nrow(param_grid)) {
+  out <- sim.fun(inits, params = params[[i]], t1=times1, t2=times2)
+  res[[i]] <- list(param_grid[i, ], out)
+  print(i)
+}
+param_grid$deaths<- unlist(lapply(res, function(x){sum(x[[2]])}))
+#write_csv(param_grid, 'res_0325.csv')
+```
+
+```{r}
+param_grid <- read_csv('res_0325.csv')
+names(param_grid)[which(names(param_grid)=='psi1')]<-'Primary_IFR'
+names(param_grid)[which(names(param_grid)=='psi2')]<-'Secondary_IFR'
+param_grid$Secondary_IFR<-ordered(param_grid$Secondary_IFR, levels=c(2, 1, 0.75, 0.5, 0.25, 0))
+
+g<-ggplot(data=param_grid, aes(x=R0, 
+                               y=omega, 
+                               z=deaths,
+                               fill=deaths
+                              ))
+g + 
+  geom_raster(interpolate = T) +
+  scale_fill_distiller(palette = "Spectral",
+                       limits=c(0,max(param_grid$deaths)),
+                       #trans='log10',
+                       breaks = seq(0,10000,by=1000))+
+   geom_contour(aes(colour=factor(..level.. == 5000,
+                                  levels = c(F, T),
+                                  labels = c("Others", "Peak Deaths in Wave 2"))),
+                alpha = 1,
+              breaks=seq(0,10000,by=1000),
+              show.legend=F) +
+   scale_colour_manual(values = c("white", "black")) +
+    #labs(x=expression("R"[0]), y=expression(omega),
+     #    colour='Deaths in Manaus',
+      # fill='Peak deaths in wave 2, Manaus')+
+  theme(text = element_text(size = 10))+ 
+  facet_grid(rows=vars(Secondary_IFR),
+             cols=vars(Primary_IFR), 
+             labeller=labeller(label_both,
+                               Primary_IFR=label_wrap_gen(10),
+                               Secondary_IFR=label_wrap_gen(10)
+                               )) 
+
+```
+
